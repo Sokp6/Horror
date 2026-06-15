@@ -1,18 +1,16 @@
 package com.kuat.horror;
 
 /*
- *  ОСОБНЯК — Super Horror v2 (libGDX / Android)
+ *  ОСОБНЯК — Super Horror v3 (libGDX / Android)
  *  ------------------------------------------------------------
- *  - 10 уровней, случайный лабиринт каждый раз, сложность растёт
- *  - бег с выносливостью (кнопка RUN, можно держать вместе с D-pad)
- *  - тряска экрана рядом с монстром
- *  - СКРИМЕР + сильная вибрация при смерти
- *  - на поздних уровнях несколько монстров
+ *  FULLSCREEN: карта на весь экран, управление полупрозрачным слоем поверх.
+ *  Камера следит за игроком. Лабиринт больше чем экран.
  *
- *  ВАЖНО: для вибрации нужно разрешение VIBRATE в AndroidManifest.xml
- *  (см. новый манифест, который идёт вместе с этим файлом).
- *
- *  Текст в HUD английский — встроенный шрифт не знает кириллицу.
+ *  - 10 уровней, случайный лабиринт, сложность растёт
+ *  - бег + выносливость (кнопка RUN)
+ *  - тряска экрана + вибрация рядом с монстром
+ *  - скример + жёсткая вибрация при смерти
+ *  - несколько монстров на поздних уровнях
  */
 
 import com.badlogic.gdx.ApplicationAdapter;
@@ -23,10 +21,9 @@ import com.badlogic.gdx.graphics.OrthographicCamera;
 import com.badlogic.gdx.graphics.g2d.BitmapFont;
 import com.badlogic.gdx.graphics.g2d.SpriteBatch;
 import com.badlogic.gdx.graphics.glutils.ShapeRenderer;
+import com.badlogic.gdx.math.MathUtils;
 import com.badlogic.gdx.math.Matrix4;
 import com.badlogic.gdx.math.Vector3;
-import com.badlogic.gdx.utils.viewport.FitViewport;
-import com.badlogic.gdx.utils.viewport.Viewport;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -38,84 +35,106 @@ import java.util.Set;
 
 public class HorrorGame extends ApplicationAdapter {
 
-    static final int TILE = 40, COLS = 19, ROWS = 13;
-    static final float WORLD_W = 760, PLAY_H = ROWS * TILE, WORLD_H = 760; // play=520, низ=управление
+    // ===== Карта (большая!) =====
+    static final int TILE = 48;
+    static final int COLS = 31, ROWS = 31;       // 31x31 = огромный лабиринт
+    static final int MAP_W = COLS * TILE, MAP_H = ROWS * TILE;
     static final int MAX_LEVEL = 10;
 
-    OrthographicCamera cam;
-    Viewport viewport;
-    ShapeRenderer sr;
-    SpriteBatch batch;
-    BitmapFont font;
+    // ===== Камера =====
+    OrthographicCamera gameCam, uiCam;
+    float screenW, screenH;
     final Vector3 touch = new Vector3();
     final Matrix4 tmp = new Matrix4();
     final Random rnd = new Random();
 
+    // ===== Рендер =====
+    ShapeRenderer sr;
+    SpriteBatch batch;
+    BitmapFont font, fontBig;
+
+    // ===== Карта =====
     boolean[][] wall = new boolean[ROWS][COLS];
     Set<Long> keys = new HashSet<>(), batteries = new HashSet<>(), lockers = new HashSet<>();
     List<int[]> monsters = new ArrayList<>();
     int doorX, doorY, px, py, keysGot;
 
-    // прогресс / состояние
+    // ===== Состояние =====
     int level = 1;
     boolean hidden, dead, won;
-    float clearTimer;     // >0 — показываем "уровень пройден"
-    float scareTimer;     // время с момента смерти (для анимации скримера)
+    float clearTimer, scareTimer;
     boolean vibrated;
+    double battery; float stamina, flicker;
 
-    // ресурсы игрока
-    double battery; float stamina; float flicker;
-
-    // параметры сложности уровня
+    // ===== Параметры уровня =====
     int keysNeeded, monCount, detectRange, batCount, lockCount;
     float monInterval, batDrain, flashBase;
 
-    // тайминги
+    // ===== Тайминги =====
     float time, moveAcc, monAcc, shake, vibeTimer;
     String msg = ""; float msgTimer;
 
-    // ввод (мультитач: бег + направление одновременно)
+    // ===== Ввод =====
     int heldDir = -1, heldPointer = -1, runPointer = -1;
     boolean runHeld;
 
-    // кнопки {x,y,w,h} в мировых координатах (y вниз)
-    final float[] BTN_UP    = { 83, 556, 64, 64};
-    final float[] BTN_DOWN  = { 83, 678, 64, 64};
-    final float[] BTN_LEFT  = { 13, 617, 64, 64};
-    final float[] BTN_RIGHT = {153, 617, 64, 64};
-    final float[] BTN_RUN   = {300, 600, 130, 90};
-    final float[] BTN_HIDE  = {450, 600, 130, 90};
+    // ===== UI размеры (вычисляются в resize) =====
+    float dpadCx, dpadCy, dpadR, btnR;
+    float runCx, runCy, runR;
+    float hideCx, hideCy, hideR;
 
     static long pack(int x, int y) { return (((long) x) << 32) | (y & 0xffffffffL); }
     static int ux(long p) { return (int) (p >> 32); }
     static int uy(long p) { return (int) (p & 0xffffffffL); }
 
     @Override public void create() {
-        cam = new OrthographicCamera();
-        cam.setToOrtho(true, WORLD_W, WORLD_H);
-        viewport = new FitViewport(WORLD_W, WORLD_H, cam);
+        gameCam = new OrthographicCamera();
+        uiCam = new OrthographicCamera();
         sr = new ShapeRenderer();
         batch = new SpriteBatch();
-        font = new BitmapFont(true);
-        font.getData().setScale(1.4f);
+        font = new BitmapFont(); font.getData().setScale(1.8f);
+        fontBig = new BitmapFont(); fontBig.getData().setScale(3.5f);
+
         Gdx.input.setInputProcessor(new InputAdapter() {
             @Override public boolean touchDown(int x, int y, int pointer, int button) { return onDown(x, y, pointer); }
+            @Override public boolean touchDragged(int x, int y, int pointer) { return onDrag(x, y, pointer); }
             @Override public boolean touchUp(int x, int y, int pointer, int button) { return onUp(pointer); }
         });
         startLevel(1);
     }
 
-    // ===== Запуск уровня =====
+    @Override public void resize(int w, int h) {
+        screenW = w; screenH = h;
+        gameCam.setToOrtho(false, w, h);
+        uiCam.setToOrtho(false, w, h);
+
+        // UI элементы: D-pad слева внизу, кнопки справа внизу
+        float pad = Math.min(w, h) * 0.04f;
+        dpadR = Math.min(w, h) * 0.14f;
+        btnR = dpadR * 0.42f;
+        dpadCx = pad + dpadR + btnR;
+        dpadCy = pad + dpadR + btnR;
+
+        hideR = Math.min(w, h) * 0.065f;
+        hideCx = w - pad - hideR;
+        hideCy = pad + hideR;
+
+        runR = Math.min(w, h) * 0.065f;
+        runCx = w - pad - runR;
+        runCy = hideCy + hideR + pad + runR;
+    }
+
+    // ===== Уровни =====
     void startLevel(int n) {
         level = n;
-        keysNeeded  = Math.min(2 + level / 2, 6);
-        monCount    = level <= 4 ? 1 : (level <= 8 ? 2 : 3);
-        monInterval = Math.max(0.14f, 0.50f - level * 0.03f + (rnd.nextFloat() * 0.06f - 0.03f));
-        detectRange = 4 + level / 2;
-        batDrain    = 1.6f + level * 0.08f;
-        flashBase   = Math.max(38f, 52f - level * 1.2f);
-        batCount    = Math.max(2, 4 - level / 4);
-        lockCount   = Math.max(1, 3 - level / 4);
+        keysNeeded  = Math.min(2 + level / 2, 7);
+        monCount    = level <= 3 ? 1 : (level <= 7 ? 2 : 3);
+        monInterval = Math.max(0.14f, 0.48f - level * 0.03f);
+        detectRange = 5 + level / 2;
+        batDrain    = 1.4f + level * 0.1f;
+        flashBase   = Math.max(100f, 180f - level * 8f);
+        batCount    = Math.max(3, 6 - level / 3);
+        lockCount   = Math.max(2, 5 - level / 3);
 
         generateMaze();
         placeStuff();
@@ -129,7 +148,6 @@ public class HorrorGame extends ApplicationAdapter {
         say("LEVEL " + level + "/" + MAX_LEVEL);
     }
 
-    // ===== Генерация лабиринта (рекурсивный бэктрекинг + немного петель) =====
     void generateMaze() {
         for (int y = 0; y < ROWS; y++) for (int x = 0; x < COLS; x++) wall[y][x] = true;
         ArrayDeque<int[]> st = new ArrayDeque<>();
@@ -144,13 +162,12 @@ public class HorrorGame extends ApplicationAdapter {
                     ns.add(new int[]{nx, ny});
             }
             if (ns.isEmpty()) { st.pop(); continue; }
-            int[] n = ns.get(rnd.nextInt(ns.size()));
-            wall[(c[1] + n[1]) / 2][(c[0] + n[0]) / 2] = false;
-            wall[n[1]][n[0]] = false;
-            st.push(n);
+            int[] nn = ns.get(rnd.nextInt(ns.size()));
+            wall[(c[1] + nn[1]) / 2][(c[0] + nn[0]) / 2] = false;
+            wall[nn[1]][nn[0]] = false;
+            st.push(nn);
         }
-        // петли: открываем часть внутренних стен (меньше на высоких уровнях)
-        float loopP = Math.max(0.05f, 0.18f - level * 0.012f);
+        float loopP = Math.max(0.04f, 0.16f - level * 0.01f);
         for (int y = 1; y < ROWS - 1; y++) for (int x = 1; x < COLS - 1; x++) {
             if (!wall[y][x]) continue;
             boolean h = (x % 2 == 0) && !wall[y][x - 1] && !wall[y][x + 1];
@@ -186,39 +203,33 @@ public class HorrorGame extends ApplicationAdapter {
 
         Collections.shuffle(floors, rnd);
         Set<Long> used = new HashSet<>(); used.add(startP); used.add(doorP);
-
-        int placed = 0;
-        for (long p : floors) { if (placed >= keysNeeded) break; if (used.contains(p)) continue; keys.add(p); used.add(p); placed++; }
-        placed = 0;
-        for (long p : floors) { if (placed >= batCount) break; if (used.contains(p)) continue; batteries.add(p); used.add(p); placed++; }
-        placed = 0;
-        for (long p : floors) { if (placed >= lockCount) break; if (used.contains(p)) continue; lockers.add(p); used.add(p); placed++; }
-        placed = 0;
+        placeN(floors, used, keys, keysNeeded);
+        placeN(floors, used, batteries, batCount);
+        placeN(floors, used, lockers, lockCount);
         for (long p : floors) {
-            if (placed >= monCount) break;
-            if (used.contains(p) || dist[uy(p)][ux(p)] < 8) continue;
-            monsters.add(new int[]{ux(p), uy(p)}); used.add(p); placed++;
+            if (monsters.size() >= monCount) break;
+            if (used.contains(p) || dist[uy(p)][ux(p)] < 10) continue;
+            monsters.add(new int[]{ux(p), uy(p)}); used.add(p);
         }
-        for (long p : floors) { // добор если далёких тайлов не хватило
-            if (placed >= monCount) break;
+        for (long p : floors) {
+            if (monsters.size() >= monCount) break;
             if (used.contains(p)) continue;
-            monsters.add(new int[]{ux(p), uy(p)}); used.add(p); placed++;
+            monsters.add(new int[]{ux(p), uy(p)}); used.add(p);
         }
+    }
+
+    void placeN(List<Long> floors, Set<Long> used, Set<Long> target, int n) {
+        for (long p : floors) { if (target.size() >= n) break; if (used.contains(p)) continue; target.add(p); used.add(p); }
     }
 
     void say(String s) { msg = s; msgTimer = 2.2f; }
     boolean isWall(int x, int y) { if (x < 0 || y < 0 || x >= COLS || y >= ROWS) return true; return wall[y][x]; }
     void vibrate(int ms) { try { Gdx.input.vibrate(ms); } catch (Throwable ignored) {} }
-
-    int nearest() {
-        int b = 999;
-        for (int[] m : monsters) b = Math.min(b, Math.abs(px - m[0]) + Math.abs(py - m[1]));
-        return b;
-    }
+    int nearest() { int b = 999; for (int[] m : monsters) b = Math.min(b, Math.abs(px - m[0]) + Math.abs(py - m[1])); return b; }
 
     void die() {
         if (dead) return;
-        dead = true; scareTimer = 0; vibrated = false; shake = 28;
+        dead = true; scareTimer = 0; vibrated = false; shake = 35;
         heldDir = -1; runHeld = false;
     }
 
@@ -226,16 +237,16 @@ public class HorrorGame extends ApplicationAdapter {
     @Override public void render() {
         float dt = Math.min(Gdx.graphics.getDeltaTime(), 0.05f);
         update(dt);
-        Gdx.gl.glClearColor(0.04f, 0.04f, 0.05f, 1);
+        Gdx.gl.glClearColor(0, 0, 0, 1);
         Gdx.gl.glClear(GL20.GL_COLOR_BUFFER_BIT);
-        viewport.apply();
-        draw();
+        drawGame();
+        drawUI();
     }
 
     void update(float dt) {
         time += dt;
         if (msgTimer > 0) msgTimer -= dt;
-        if (shake > 0) shake = Math.max(0, shake - dt * 22);
+        if (shake > 0) shake = Math.max(0, shake - dt * 24);
 
         if (dead) {
             scareTimer += dt;
@@ -268,10 +279,10 @@ public class HorrorGame extends ApplicationAdapter {
 
         int nd = nearest();
         if (!hidden && nd <= 3) {
-            shake = Math.max(shake, (4 - nd) * 1.5f);
+            shake = Math.max(shake, (4 - nd) * 2f);
             vibeTimer += dt;
-            float pulse = nd <= 1 ? 0.28f : nd <= 2 ? 0.45f : 0.7f;
-            if (vibeTimer >= pulse) { vibeTimer = 0; vibrate(55); }
+            float pulse = nd <= 1 ? 0.25f : nd <= 2 ? 0.42f : 0.65f;
+            if (vibeTimer >= pulse) { vibeTimer = 0; vibrate(60); }
         } else vibeTimer = 0;
     }
 
@@ -285,10 +296,10 @@ public class HorrorGame extends ApplicationAdapter {
     void afterMove() {
         long p = pack(px, py);
         if (keys.remove(p)) { keysGot++; say("KEY " + keysGot + "/" + keysNeeded); }
-        if (batteries.remove(p)) { battery = Math.min(100, battery + 45); say("BATTERY +45%"); }
+        if (batteries.remove(p)) { battery = Math.min(100, battery + 40); say("BATTERY +40%"); }
         if (px == doorX && py == doorY) {
-            if (keysGot >= keysNeeded) { if (level >= MAX_LEVEL) won = true; else { clearTimer = 1.6f; say("LEVEL CLEARED"); } }
-            else say("DOOR LOCKED " + keysGot + "/" + keysNeeded);
+            if (keysGot >= keysNeeded) { if (level >= MAX_LEVEL) won = true; else { clearTimer = 1.5f; say("LEVEL CLEARED"); } }
+            else say("LOCKED " + keysGot + "/" + keysNeeded);
         }
         for (int[] m : monsters) if (m[0] == px && m[1] == py && !hidden) { die(); return; }
     }
@@ -299,8 +310,8 @@ public class HorrorGame extends ApplicationAdapter {
             hidden = !hidden;
             if (!hidden) for (int[] m : monsters) if (m[0] == px && m[1] == py) { die(); return; }
             heldDir = -1; runHeld = false;
-            say(hidden ? "HIDDEN. STAY QUIET" : "OUT");
-        } else say("NO LOCKER HERE");
+            say(hidden ? "HIDDEN" : "OUT");
+        } else say("NO LOCKER");
     }
 
     void monsterStep() {
@@ -340,184 +351,272 @@ public class HorrorGame extends ApplicationAdapter {
         return o.isEmpty() ? null : o.get(rnd.nextInt(o.size()));
     }
 
-    // ===== Отрисовка =====
-    void draw() {
+    // ===== Отрисовка мира =====
+    void drawGame() {
+        // камера следит за игроком
+        float cx = px * TILE + TILE / 2f;
+        float cy = (ROWS - 1 - py) * TILE + TILE / 2f;  // Y перевёрнут для OpenGL
+        gameCam.position.set(cx, cy, 0);
+        // зажимаем камеру чтоб не вылезала за карту
+        float hw = screenW / 2f, hh = screenH / 2f;
+        gameCam.position.x = MathUtils.clamp(gameCam.position.x, hw, MAP_W - hw);
+        gameCam.position.y = MathUtils.clamp(gameCam.position.y, hh, MAP_H - hh);
+        gameCam.update();
+
         float ox = shake > 0 ? (rnd.nextFloat() * 2 - 1) * shake : 0;
         float oy = shake > 0 ? (rnd.nextFloat() * 2 - 1) * shake : 0;
-        Matrix4 shaken = tmp.set(cam.combined).translate(ox, oy, 0);
-
+        Matrix4 shaken = tmp.set(gameCam.combined).translate(ox, oy, 0);
         sr.setProjectionMatrix(shaken);
         Gdx.gl.glEnable(GL20.GL_BLEND);
 
-        // мир
         sr.begin(ShapeRenderer.ShapeType.Filled);
-        for (int y = 0; y < ROWS; y++) for (int x = 0; x < COLS; x++) {
-            if (wall[y][x]) c(28, 28, 34, 1); else c(18, 18, 22, 1);
-            sr.rect(x * TILE, y * TILE, TILE, TILE);
+        // рисуем только видимые тайлы (оптимизация)
+        int minTx = Math.max(0, (int)((gameCam.position.x - hw - 50) / TILE));
+        int maxTx = Math.min(COLS - 1, (int)((gameCam.position.x + hw + 50) / TILE));
+        int minTy = Math.max(0, (int)((gameCam.position.y - hh - 50) / TILE));
+        int maxTy = Math.min(ROWS - 1, (int)((gameCam.position.y + hh + 50) / TILE));
+
+        for (int gy = minTy; gy <= maxTy; gy++) {
+            int my = ROWS - 1 - gy; // map y (перевёрнут)
+            if (my < 0 || my >= ROWS) continue;
+            for (int gx = minTx; gx <= maxTx; gx++) {
+                float sx = gx * TILE, sy = gy * TILE;
+                if (wall[my][gx]) { c(30, 30, 38, 1); sr.rect(sx, sy, TILE, TILE); c(48, 48, 60, 1); sr.rect(sx + 2, sy + 2, TILE - 4, TILE - 4); c(30, 30, 38, 1); sr.rect(sx + 4, sy + 4, TILE - 8, TILE - 8); }
+                else { c(16, 16, 20, 1); sr.rect(sx, sy, TILE, TILE); }
+            }
         }
-        for (long p : lockers) { c(80, 55, 30, 1); sr.rect(ux(p) * TILE + 8, uy(p) * TILE + 4, TILE - 16, TILE - 6); }
-        if (keysGot >= keysNeeded) c(60, 200, 90, 1); else c(120, 40, 40, 1);
-        sr.rect(doorX * TILE + 6, doorY * TILE + 4, TILE - 12, TILE - 6);
-        c(240, 210, 60, 1);
-        for (long p : keys) sr.circle(ux(p) * TILE + TILE / 2f, uy(p) * TILE + TILE / 2f, (TILE - 24) / 2f);
-        c(70, 210, 120, 1);
-        for (long p : batteries) sr.rect(ux(p) * TILE + 13, uy(p) * TILE + 10, TILE - 26, TILE - 20);
+
+        // предметы
+        for (long p : lockers) drawAt(ux(p), uy(p), 80, 55, 30, true);
+        if (keysGot >= keysNeeded) c(50, 220, 90, 1); else c(140, 35, 35, 1);
+        float ddx = doorX * TILE + 6, ddy = (ROWS - 1 - doorY) * TILE + 6;
+        sr.rect(ddx, ddy, TILE - 12, TILE - 12);
+
+        c(255, 215, 50, 1);
+        for (long p : keys) { float kx = ux(p) * TILE + TILE / 2f, ky = (ROWS - 1 - uy(p)) * TILE + TILE / 2f; sr.circle(kx, ky, TILE * 0.2f); }
+        c(70, 220, 120, 1);
+        for (long p : batteries) { float bx = ux(p) * TILE + TILE * 0.3f, by = (ROWS - 1 - uy(p)) * TILE + TILE * 0.3f; sr.rect(bx, by, TILE * 0.4f, TILE * 0.4f); }
+
+        // монстры
         for (int[] m : monsters) {
-            c(160, 20, 20, 1); sr.circle(m[0] * TILE + TILE / 2f, m[1] * TILE + TILE / 2f, (TILE - 12) / 2f);
-            c(255, 230, 0, 1);
-            sr.circle(m[0] * TILE + 15, m[1] * TILE + 17, 3); sr.circle(m[0] * TILE + TILE - 15, m[1] * TILE + 17, 3);
+            float mmx = m[0] * TILE + TILE / 2f, mmy = (ROWS - 1 - m[1]) * TILE + TILE / 2f;
+            c(180, 15, 15, 1); sr.circle(mmx, mmy, TILE * 0.38f);
+            c(255, 235, 0, 1);
+            sr.circle(mmx - TILE * 0.12f, mmy + TILE * 0.06f, TILE * 0.08f);
+            sr.circle(mmx + TILE * 0.12f, mmy + TILE * 0.06f, TILE * 0.08f);
         }
-        if (hidden) c(60, 60, 60, 1); else c(120, 200, 255, 1);
-        sr.circle(px * TILE + TILE / 2f, py * TILE + TILE / 2f, (TILE - 18) / 2f);
+
+        // игрок
+        float ppx = px * TILE + TILE / 2f, ppy = (ROWS - 1 - py) * TILE + TILE / 2f;
+        if (hidden) c(50, 50, 50, 1); else c(100, 190, 255, 1);
+        sr.circle(ppx, ppy, TILE * 0.28f);
+        if (!hidden) { c(200, 230, 255, 1); sr.circle(ppx, ppy, TILE * 0.18f); }
         sr.end();
 
-        // фонарь
+        // фонарь (затемнение)
         sr.begin(ShapeRenderer.ShapeType.Filled);
-        float lr = hidden ? 55 : (flashBase + (float) battery * 1.5f + flicker); if (lr < 32) lr = 32;
-        float pcx = px * TILE + TILE / 2f, pcy = py * TILE + TILE / 2f, inner = lr * 0.55f;
-        for (int y = 0; y < ROWS; y++) for (int x = 0; x < COLS; x++) {
-            float dx = (x * TILE + TILE / 2f) - pcx, dy = (y * TILE + TILE / 2f) - pcy;
-            float d = (float) Math.sqrt(dx * dx + dy * dy), a;
-            if (d <= inner) a = 0; else if (d >= lr) a = 1; else a = (d - inner) / (lr - inner);
-            if (a > 0) { sr.setColor(0, 0, 0, a); sr.rect(x * TILE, y * TILE, TILE, TILE); }
+        float lr = hidden ? 80 : (flashBase + (float) battery * 2f + flicker); if (lr < 60) lr = 60;
+        float inner = lr * 0.5f;
+        for (int gy = minTy; gy <= maxTy; gy++) {
+            int mpy = ROWS - 1 - gy;
+            if (mpy < 0 || mpy >= ROWS) continue;
+            for (int gx = minTx; gx <= maxTx; gx++) {
+                float tcx = gx * TILE + TILE / 2f, tcy = gy * TILE + TILE / 2f;
+                float dx = tcx - ppx, dy = tcy - ppy;
+                float d = (float) Math.sqrt(dx * dx + dy * dy), a;
+                if (d <= inner) a = 0; else if (d >= lr) a = 1; else a = (d - inner) / (lr - inner);
+                if (a > 0) { sr.setColor(0, 0, 0, a); sr.rect(gx * TILE, gy * TILE, TILE, TILE); }
+            }
         }
+        // красный экран рядом с монстром
         int nd = nearest();
-        if (!hidden && nd <= 4 && !dead) { sr.setColor(0.6f, 0, 0, 0.22f); sr.rect(0, 0, WORLD_W, PLAY_H); }
+        if (!hidden && nd <= 4 && !dead) {
+            float ra = (5 - nd) * 0.06f;
+            sr.setColor(0.7f, 0, 0, ra);
+            sr.rect(gameCam.position.x - hw, gameCam.position.y - hh, screenW, screenH);
+        }
         sr.end();
-
-        // панель управления (без тряски)
-        sr.setProjectionMatrix(cam.combined);
-        sr.begin(ShapeRenderer.ShapeType.Filled);
-        c(8, 8, 10, 1); sr.rect(0, PLAY_H, WORLD_W, WORLD_H - PLAY_H);
-        c(40, 40, 52, 1);
-        for (float[] b : new float[][]{BTN_UP, BTN_DOWN, BTN_LEFT, BTN_RIGHT}) sr.rect(b[0], b[1], b[2], b[3]);
-        if (runHeld && stamina > 0) c(40, 90, 120, 1); else c(35, 45, 55, 1);
-        sr.rect(BTN_RUN[0], BTN_RUN[1], BTN_RUN[2], BTN_RUN[3]);
-        if (hidden) c(95, 35, 35, 1); else c(55, 30, 30, 1);
-        sr.rect(BTN_HIDE[0], BTN_HIDE[1], BTN_HIDE[2], BTN_HIDE[3]);
-        // батарея
-        c(60, 60, 70, 1); sr.rect(600, 556, 145, 14);
-        if (battery > 40) c(70, 210, 120, 1); else if (battery > 15) c(230, 200, 60, 1); else c(220, 60, 60, 1);
-        sr.rect(600, 556, (float) (145 * battery / 100), 14);
-        // выносливость
-        c(60, 60, 70, 1); sr.rect(600, 578, 145, 14);
-        c(90, 150, 230, 1); sr.rect(600, 578, 145 * stamina / 100f, 14);
-        sr.end();
-        Gdx.gl.glDisable(GL20.GL_BLEND);
 
         // скример
         if (dead) {
-            sr.setProjectionMatrix(shaken);
-            Gdx.gl.glEnable(GL20.GL_BLEND);
             sr.begin(ShapeRenderer.ShapeType.Filled);
-            drawJumpscare();
+            drawJumpscare(gameCam.position.x, gameCam.position.y);
             sr.end();
-            Gdx.gl.glDisable(GL20.GL_BLEND);
         }
 
-        // текст (без тряски)
-        batch.setProjectionMatrix(cam.combined);
-        batch.begin();
-        font.getData().setScale(1.4f);
-        font.setColor(1, 0.82f, 0.24f, 1); font.draw(batch, "LVL " + level + "/" + MAX_LEVEL, 16, 548);
-        font.draw(batch, "KEYS " + keysGot + "/" + keysNeeded, 200, 548);
-        font.setColor(0.8f, 0.85f, 0.95f, 1);
-        font.draw(batch, "LIGHT", 600, 552);
-        font.draw(batch, "RUN", 600, 575);
-        font.setColor(1, 1, 1, 1);
-        font.draw(batch, "^", BTN_UP[0] + 28, BTN_UP[1] + 44);
-        font.draw(batch, "v", BTN_DOWN[0] + 28, BTN_DOWN[1] + 44);
-        font.draw(batch, "<", BTN_LEFT[0] + 28, BTN_LEFT[1] + 44);
-        font.draw(batch, ">", BTN_RIGHT[0] + 28, BTN_RIGHT[1] + 44);
-        font.draw(batch, "RUN", BTN_RUN[0] + 38, BTN_RUN[1] + 56);
-        font.draw(batch, "HIDE", BTN_HIDE[0] + 35, BTN_HIDE[1] + 56);
-        if (msgTimer > 0) { font.setColor(1, 0.45f, 0.45f, 1); font.draw(batch, msg, 16, 590); }
-
-        if (clearTimer > 0) {
-            font.getData().setScale(2.6f);
-            font.setColor(0.27f, 0.86f, 0.47f, 1);
-            font.draw(batch, "LEVEL " + level + " CLEARED", WORLD_W / 2 - 220, PLAY_H / 2);
-        }
-        if (dead) {
-            font.getData().setScale(3.2f);
-            font.setColor(1, 0.1f, 0.1f, 1);
-            font.draw(batch, "YOU DIED", WORLD_W / 2 - 165, PLAY_H / 2 - 120);
-            font.getData().setScale(1.6f);
-            font.setColor(1, 1, 1, 1);
-            font.draw(batch, "tap to retry", WORLD_W / 2 - 70, PLAY_H / 2 + 150);
-        }
-        if (won) {
-            font.getData().setScale(2.4f);
-            font.setColor(0.27f, 0.86f, 0.47f, 1);
-            font.draw(batch, "YOU ESCAPED ALL 10", WORLD_W / 2 - 250, PLAY_H / 2 - 30);
-            font.getData().setScale(1.6f);
-            font.setColor(1, 1, 1, 1);
-            font.draw(batch, "tap to play again", WORLD_W / 2 - 95, PLAY_H / 2 + 30);
-        }
-        font.getData().setScale(1.4f);
-        batch.end();
+        Gdx.gl.glDisable(GL20.GL_BLEND);
     }
 
-    // детальный скример из примитивов (растёт и дёргается)
-    void drawJumpscare() {
+    void drawAt(int mx, int my, int r, int g, int b, boolean rect) {
+        c(r, g, b, 1);
+        float ax = mx * TILE + 6, ay = (ROWS - 1 - my) * TILE + 6;
+        sr.rect(ax, ay, TILE - 12, TILE - 12);
+    }
+
+    void drawJumpscare(float cx, float cy) {
         float t = scareTimer;
-        float grow = Math.min(1f, t / 0.35f);
-        // стробящий красно-чёрный фон
-        float strobe = 0.45f + 0.4f * (float) Math.abs(Math.sin(t * 28));
-        sr.setColor(0.55f, 0f, 0f, strobe); sr.rect(0, 0, WORLD_W, PLAY_H);
-        sr.setColor(0f, 0f, 0f, 0.35f); sr.rect(0, 0, WORLD_W, PLAY_H);
+        float grow = Math.min(1f, t / 0.3f);
+        float strobe = 0.5f + 0.4f * (float) Math.abs(Math.sin(t * 30));
+        sr.setColor(0.6f, 0f, 0f, strobe);
+        sr.rect(cx - screenW / 2, cy - screenH / 2, screenW, screenH);
+        sr.setColor(0, 0, 0, 0.3f);
+        sr.rect(cx - screenW / 2, cy - screenH / 2, screenW, screenH);
 
-        float cx = WORLD_W / 2f, cy = PLAY_H / 2f;
-        float s = grow * (1f + 0.04f * (float) Math.sin(t * 22)); // лёгкая пульсация
-        float head = 150 * s;
+        float s = grow * (1f + 0.05f * (float) Math.sin(t * 24));
+        float head = Math.min(screenW, screenH) * 0.32f * s;
 
-        // голова
         sr.setColor(0.06f, 0.02f, 0.02f, 1); sr.circle(cx, cy, head);
-        sr.setColor(0.16f, 0.03f, 0.03f, 1); sr.circle(cx, cy, head * 0.92f);
+        sr.setColor(0.18f, 0.04f, 0.04f, 1); sr.circle(cx, cy, head * 0.9f);
 
-        // глаза (светящиеся)
-        float ex = head * 0.42f, ey = head * 0.22f, er = head * 0.26f;
-        sr.setColor(1f, 0.9f, 0.2f, 1);
-        sr.circle(cx - ex, cy - ey, er); sr.circle(cx + ex, cy - ey, er);
-        sr.setColor(0.9f, 0.1f, 0.05f, 1);
-        sr.circle(cx - ex, cy - ey, er * 0.6f); sr.circle(cx + ex, cy - ey, er * 0.6f);
+        float ex = head * 0.4f, ey = head * 0.2f, er = head * 0.24f;
+        sr.setColor(1f, 0.9f, 0.15f, 1);
+        sr.circle(cx - ex, cy + ey, er); sr.circle(cx + ex, cy + ey, er);
+        sr.setColor(0.95f, 0.08f, 0.03f, 1);
+        sr.circle(cx - ex, cy + ey, er * 0.55f); sr.circle(cx + ex, cy + ey, er * 0.55f);
         sr.setColor(0, 0, 0, 1);
-        sr.circle(cx - ex, cy - ey, er * 0.26f); sr.circle(cx + ex, cy - ey, er * 0.26f);
+        sr.circle(cx - ex, cy + ey, er * 0.22f); sr.circle(cx + ex, cy + ey, er * 0.22f);
 
-        // злые брови
         sr.setColor(0, 0, 0, 1);
-        sr.triangle(cx - head * 0.7f, cy - head * 0.62f, cx - head * 0.12f, cy - head * 0.36f, cx - head * 0.66f, cy - head * 0.34f);
-        sr.triangle(cx + head * 0.7f, cy - head * 0.62f, cx + head * 0.12f, cy - head * 0.36f, cx + head * 0.66f, cy - head * 0.34f);
+        sr.triangle(cx - head * 0.68f, cy + head * 0.58f, cx - head * 0.1f, cy + head * 0.35f, cx - head * 0.64f, cy + head * 0.32f);
+        sr.triangle(cx + head * 0.68f, cy + head * 0.58f, cx + head * 0.1f, cy + head * 0.35f, cx + head * 0.64f, cy + head * 0.32f);
 
-        // пасть
-        float mw = head * 0.78f, mtop = cy + head * 0.18f, mbot = cy + head * 0.72f;
+        float mw = head * 0.8f, mtop = cy - head * 0.18f, mbot = cy - head * 0.65f;
         sr.setColor(0, 0, 0, 1);
-        sr.rect(cx - mw / 2, mtop, mw, mbot - mtop);
-        // зубы (треугольники сверху и снизу)
-        sr.setColor(0.92f, 0.92f, 0.85f, 1);
-        int teeth = 7;
+        sr.rect(cx - mw / 2, mbot, mw, mtop - mbot);
+        sr.setColor(0.93f, 0.93f, 0.86f, 1);
+        int teeth = 8;
         float tw = mw / teeth;
         for (int i = 0; i < teeth; i++) {
             float lx = cx - mw / 2 + i * tw;
-            sr.triangle(lx, mtop, lx + tw, mtop, lx + tw / 2, mtop + head * 0.22f);            // верхние
-            sr.triangle(lx, mbot, lx + tw, mbot, lx + tw / 2, mbot - head * 0.22f);            // нижние
+            sr.triangle(lx, mtop, lx + tw, mtop, lx + tw / 2, mtop - head * 0.2f);
+            sr.triangle(lx, mbot, lx + tw, mbot, lx + tw / 2, mbot + head * 0.2f);
         }
     }
 
+    // ===== UI поверх игры (полупрозрачный) =====
+    void drawUI() {
+        uiCam.update();
+        Gdx.gl.glEnable(GL20.GL_BLEND);
+        sr.setProjectionMatrix(uiCam.combined);
+
+        sr.begin(ShapeRenderer.ShapeType.Filled);
+
+        // D-pad фон
+        sr.setColor(1, 1, 1, 0.08f);
+        sr.circle(dpadCx, dpadCy, dpadR + btnR);
+
+        // стрелки
+        float[][] dirs = {
+            {dpadCx, dpadCy + dpadR},          // up
+            {dpadCx, dpadCy - dpadR},          // down
+            {dpadCx - dpadR, dpadCy},          // left
+            {dpadCx + dpadR, dpadCy}           // right
+        };
+        for (int i = 0; i < 4; i++) {
+            sr.setColor(1, 1, 1, heldDir == i ? 0.35f : 0.18f);
+            sr.circle(dirs[i][0], dirs[i][1], btnR);
+        }
+
+        // HIDE кнопка
+        sr.setColor(1, 0.3f, 0.3f, hidden ? 0.4f : 0.18f);
+        sr.circle(hideCx, hideCy, hideR);
+
+        // RUN кнопка
+        sr.setColor(0.3f, 0.6f, 1, runHeld && stamina > 0 ? 0.4f : 0.18f);
+        sr.circle(runCx, runCy, runR);
+
+        // HUD: батарея (верх справа)
+        float barW = screenW * 0.22f, barH = screenH * 0.015f;
+        float barX = screenW - barW - 16, barY = screenH - 20;
+        sr.setColor(1, 1, 1, 0.12f); sr.rect(barX, barY, barW, barH);
+        if (battery > 40) sr.setColor(0.27f, 0.82f, 0.47f, 0.7f);
+        else if (battery > 15) sr.setColor(0.9f, 0.78f, 0.24f, 0.7f);
+        else sr.setColor(0.86f, 0.24f, 0.24f, 0.7f);
+        sr.rect(barX, barY, (float)(barW * battery / 100), barH);
+
+        // HUD: выносливость
+        float stY = barY - barH - 6;
+        sr.setColor(1, 1, 1, 0.12f); sr.rect(barX, stY, barW, barH);
+        sr.setColor(0.35f, 0.6f, 0.9f, 0.7f); sr.rect(barX, stY, barW * stamina / 100f, barH);
+
+        sr.end();
+
+        // текст UI
+        batch.setProjectionMatrix(uiCam.combined);
+        batch.begin();
+
+        font.setColor(1, 0.82f, 0.24f, 0.9f);
+        font.draw(batch, "LVL " + level, 16, screenH - 10);
+        font.draw(batch, "KEYS " + keysGot + "/" + keysNeeded, 16, screenH - 36);
+
+        font.setColor(1, 1, 1, 0.6f);
+        font.draw(batch, "LIGHT", barX, barY + barH + 18);
+        font.draw(batch, "RUN", barX, stY + barH + 18);
+
+        // кнопки — текст
+        font.setColor(1, 1, 1, 0.7f);
+        font.draw(batch, "^", dirs[0][0] - 8, dirs[0][1] + 12);
+        font.draw(batch, "v", dirs[1][0] - 8, dirs[1][1] + 12);
+        font.draw(batch, "<", dirs[2][0] - 8, dirs[2][1] + 12);
+        font.draw(batch, ">", dirs[3][0] - 8, dirs[3][1] + 12);
+        font.setColor(1, 0.4f, 0.4f, 0.8f);
+        font.draw(batch, "H", hideCx - 10, hideCy + 12);
+        font.setColor(0.4f, 0.7f, 1, 0.8f);
+        font.draw(batch, "R", runCx - 8, runCy + 12);
+
+        // сообщение
+        if (msgTimer > 0) { font.setColor(1, 0.4f, 0.4f, 0.9f); font.draw(batch, msg, 16, screenH * 0.5f); }
+
+        if (clearTimer > 0) {
+            fontBig.setColor(0.27f, 0.86f, 0.47f, 1);
+            fontBig.draw(batch, "LEVEL " + level + " CLEAR", screenW * 0.15f, screenH * 0.55f);
+        }
+        if (dead) {
+            fontBig.setColor(1, 0.08f, 0.08f, 1);
+            fontBig.draw(batch, "YOU DIED", screenW * 0.2f, screenH * 0.65f);
+            font.setColor(1, 1, 1, 1);
+            font.draw(batch, "tap to retry", screenW * 0.35f, screenH * 0.38f);
+        }
+        if (won) {
+            fontBig.setColor(0.27f, 0.86f, 0.47f, 1);
+            fontBig.draw(batch, "ESCAPED!", screenW * 0.2f, screenH * 0.6f);
+            font.setColor(1, 1, 1, 1);
+            font.draw(batch, "tap to restart", screenW * 0.32f, screenH * 0.4f);
+        }
+        batch.end();
+        Gdx.gl.glDisable(GL20.GL_BLEND);
+    }
+
     void c(int r, int g, int b, float a) { sr.setColor(r / 255f, g / 255f, b / 255f, a); }
-    boolean in(float[] r, float x, float y) { return x >= r[0] && x <= r[0] + r[2] && y >= r[1] && y <= r[1] + r[3]; }
+
+    float dist(float x1, float y1, float x2, float y2) { float dx = x1 - x2, dy = y1 - y2; return (float) Math.sqrt(dx * dx + dy * dy); }
+
+    int dirFromDpad(float x, float y) {
+        float dx = x - dpadCx, dy = y - dpadCy;
+        if (dx * dx + dy * dy > (dpadR + btnR + 20) * (dpadR + btnR + 20)) return -1;
+        if (Math.abs(dx) > Math.abs(dy)) return dx > 0 ? 3 : 2;  // right : left
+        else return dy > 0 ? 0 : 1;  // up : down (screen y inverted)
+    }
 
     boolean onDown(int sx, int sy, int pointer) {
-        touch.set(sx, sy, 0); viewport.unproject(touch);
-        float x = touch.x, y = touch.y;
+        float x = sx, y = screenH - sy;  // screen to UI coords
         if (dead || won) { startLevel(dead ? level : 1); return true; }
         if (clearTimer > 0) return true;
-        if (in(BTN_HIDE, x, y)) { toggleHide(); return true; }
-        if (in(BTN_RUN, x, y)) { runHeld = true; runPointer = pointer; return true; }
-        int dir = -1;
-        if (in(BTN_UP, x, y)) dir = 0; else if (in(BTN_DOWN, x, y)) dir = 1;
-        else if (in(BTN_LEFT, x, y)) dir = 2; else if (in(BTN_RIGHT, x, y)) dir = 3;
-        if (dir >= 0) { heldDir = dir; heldPointer = pointer; moveAcc = 0; tryMove(dir); }
+
+        if (dist(x, y, hideCx, hideCy) <= hideR * 1.4f) { toggleHide(); return true; }
+        if (dist(x, y, runCx, runCy) <= runR * 1.4f) { runHeld = true; runPointer = pointer; return true; }
+
+        int dir = dirFromDpad(x, y);
+        if (dir >= 0) { heldDir = dir; heldPointer = pointer; moveAcc = 0; tryMove(dir); return true; }
+        return true;
+    }
+
+    boolean onDrag(int sx, int sy, int pointer) {
+        if (pointer == heldPointer) {
+            float x = sx, y = screenH - sy;
+            int dir = dirFromDpad(x, y);
+            if (dir >= 0 && dir != heldDir) { heldDir = dir; moveAcc = 0; tryMove(dir); }
+        }
         return true;
     }
 
@@ -527,6 +626,5 @@ public class HorrorGame extends ApplicationAdapter {
         return true;
     }
 
-    @Override public void resize(int w, int h) { viewport.update(w, h, true); }
-    @Override public void dispose() { sr.dispose(); batch.dispose(); font.dispose(); }
+    @Override public void dispose() { sr.dispose(); batch.dispose(); font.dispose(); fontBig.dispose(); }
 }
