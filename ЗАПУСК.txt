@@ -1,0 +1,49 @@
+============================================
+  КАК ЗАПУСТИТЬ (читай по шагам, не пропускай)
+============================================
+
+1. НУЖНО: JDK 17+ и Android Studio (он ставит Android SDK)
+   Проверь: java -version   и   javac -version
+
+2. Открой папку проекта в Android Studio:
+   File → Open → выбери эту папку
+   Android Studio сам пропишет local.properties с путём к SDK.
+   Подожди пока он проиндексирует проект.
+
+3. Скачай gradle-wrapper.jar (нужен один раз):
+   Запусти  setup.bat  двойным кликом.
+   Он скачает wrapper и сразу запустит первую сборку APK.
+
+   Если не через setup.bat — из терминала в папке проекта:
+     gradlew.bat android:assembleDebug
+
+4. APK будет тут:
+     android\build\outputs\apk\debug\android-debug.apk
+
+5. Кинуть на телефон (включи "Отладка по USB" в настройках разработчика):
+     gradlew.bat android:installDebug
+
+6. Тест на ПК (без телефона):
+     gradlew.bat lwjgl3:run
+
+============================================
+  ЧАСТЫЕ ОШИБКИ
+============================================
+
+"SDK location not found"
+→ Открой проект в Android Studio — он сам всё пропишет.
+  Или впиши sdk.dir вручную в local.properties (пример там есть).
+
+"JAVA_HOME not set"
+→ Поставь JDK 17+. В Android Studio встроен: File → Project Structure → SDK Location.
+
+"gradle-wrapper.jar not found"
+→ Запусти setup.bat. Или установи Gradle через Chocolatey:
+  choco install gradle  →  gradle wrapper --gradle-version 8.5
+
+"Task copyAndroidNatives FAILED"
+→ Обычно из-за прокси или нет интернета. Нужен интернет для скачивания зависимостей.
+
+"BUILD SUCCESSFUL" но APK не ставится
+→ На телефоне: Настройки → Разработчик → Отладка по USB → включить.
+  Если нет пункта "Разработчик" — нажми "Номер сборки" 7 раз в "О телефоне".

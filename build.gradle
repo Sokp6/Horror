@@ -1,0 +1,21 @@
+buildscript {
+    ext {
+        gdxVersion       = '1.12.1'
+        androidPluginVersion = '8.2.2'
+    }
+    repositories {
+        google()
+        mavenCentral()
+    }
+    dependencies {
+        classpath "com.android.tools.build:gradle:$androidPluginVersion"
+    }
+}
+
+allprojects {
+    repositories {
+        google()
+        mavenCentral()
+        maven { url 'https://jitpack.io' }
+    }
+}

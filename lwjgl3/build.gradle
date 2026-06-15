@@ -1,0 +1,22 @@
+apply plugin: 'java-library'
+apply plugin: 'application'
+
+application {
+    mainClass = 'com.kuat.horror.lwjgl3.Lwjgl3Launcher'
+}
+
+sourceSets.main.resources.srcDirs += ['../android/assets']
+
+dependencies {
+    implementation "com.badlogicgames.gdx:gdx-backend-lwjgl3:$gdxVersion"
+    implementation "com.badlogicgames.gdx:gdx-platform:$gdxVersion:natives-desktop"
+    implementation project(':core')
+}
+
+// жирный jar со всем внутри (java -jar horror.jar)
+jar {
+    duplicatesStrategy = 'exclude'
+    dependsOn configurations.runtimeClasspath
+    from { configurations.runtimeClasspath.collect { it.isDirectory() ? it : zipTree(it) } }
+    manifest { attributes 'Main-Class': application.mainClass }
+}
